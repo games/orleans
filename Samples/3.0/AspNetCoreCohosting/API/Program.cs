@@ -13,14 +13,12 @@ namespace AspNetCoreCohosting
 {
     public static class OrleansExtension 
     {
-        public static ISiloBuilder UseShutdownTimeout(this ISiloBuilder silo)
+        public static ISiloBuilder UseShutdownTimeout(this ISiloBuilder silo, TimeSpan shutdown)
         {
-            // we could read the settings from env or config file
             // BTW: there is a bug on DOTNET_SHUTDOWNTIMEOUTSECONDS
             // please refer to https://github.com/dotnet/runtime/issues/36059
             // configure DeactivationTimeout as well due to the issue here
             // https://github.com/dotnet/orleans/issues/6832
-            var shutdown = TimeSpan.FromMinutes(1);
             silo.Configure<HostOptions>(x => x.ShutdownTimeout = shutdown)
                 .Configure<GrainCollectionOptions>(x => x.DeactivationTimeout = shutdown);
             return silo;
@@ -35,7 +33,7 @@ namespace AspNetCoreCohosting
                 {
                     siloBuilder
                     .UseLocalhostClustering()
-                    .UseShutdownTimeout()
+                    .UseShutdownTimeout(TimeSpan.FromMinutes(1))
                     .Configure<ClusterOptions>(opts =>
                     {
                         opts.ClusterId = "dev";
