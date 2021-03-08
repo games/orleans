@@ -8,6 +8,7 @@ using UnitTests.Grains;
 using Xunit;
 using System.Linq;
 using Orleans.Hosting;
+using System;
 
 namespace DependencyInjection.Tests
 {
@@ -48,7 +49,7 @@ namespace DependencyInjection.Tests
         public async Task CanGetGrainWithInjectedDependencies()
         {
             IDIGrainWithInjectedServices grain = this.fixture.GrainFactory.GetGrain<IDIGrainWithInjectedServices>(GetRandomGrainId());
-            long ignored = await grain.GetLongValue();
+            var _ = await grain.GetLongValue();
         }
 
         [Fact]
@@ -57,7 +58,7 @@ namespace DependencyInjection.Tests
             // please don't inject your implemetation of IGrainFactory to DI container in Startup Class, 
             // since we are currently not supporting replacing IGrainFactory 
             IDIGrainWithInjectedServices grain = this.fixture.GrainFactory.GetGrain<IDIGrainWithInjectedServices>(GetRandomGrainId());
-            long ignored = await grain.GetGrainFactoryId();
+            _ = await grain.GetGrainFactoryId();
         }
 
         [Fact]
@@ -156,9 +157,8 @@ namespace DependencyInjection.Tests
         public async Task CannotGetExplictlyRegisteredGrain()
         {
             ISimpleDIGrain grain = this.fixture.GrainFactory.GetGrain<ISimpleDIGrain>(GetRandomGrainId(), grainClassNamePrefix: "UnitTests.Grains.ExplicitlyRegistered");
-            var exception = await Assert.ThrowsAsync<OrleansException>(() => grain.GetLongValue());
-            Assert.Contains("Error creating activation for", exception.Message);
-            Assert.Contains("explicitly-registered", exception.Message);
+            var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => grain.GetLongValue());
+            Assert.Contains("Unable to resolve service for type 'System.String' while attempting to activate 'UnitTests.Grains.ExplicitlyRegisteredSimpleDIGrain'", exception.Message);
         }
 
         [Fact]

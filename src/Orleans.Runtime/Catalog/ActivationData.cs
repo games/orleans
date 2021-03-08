@@ -94,6 +94,8 @@ namespace Orleans.Runtime
                     this.SetState(ActivationState.Valid); // Activate calls on this activation are finished
                 }
 
+                this.collector.ScheduleCollection(this);
+
                 if (!this.IsCurrentlyExecuting)
                 {
                     this.RunOnInactive();
@@ -152,31 +154,6 @@ namespace Orleans.Runtime
         internal void SetGrainInstance(Grain grainInstance)
         {
             GrainInstance = grainInstance;
-        }
-        
-        private Streams.StreamDirectory streamDirectory;
-        internal Streams.StreamDirectory GetStreamDirectory()
-        {
-            return streamDirectory ?? (streamDirectory = new Streams.StreamDirectory());
-        }
-
-        internal bool IsUsingStreams 
-        {
-            get { return streamDirectory != null; }
-        }
-
-        internal async Task DeactivateStreamResources()
-        {
-            if (streamDirectory == null) return; // No streams - Nothing to do.
-            if (_components == null) return; // No installed extensions - Nothing to do.
-
-            if (StreamResourceTestControl.TestOnlySuppressStreamCleanupOnDeactivate)
-            {
-                logger.Warn(0, "Suppressing cleanup of stream resources during tests for {0}", this);
-                return;
-            }
-
-            await streamDirectory.Cleanup(true, false);
         }
 
         public IAddressable GrainInstance { get; private set; }
@@ -686,7 +663,7 @@ namespace Orleans.Runtime
                         }
                         else
                         {
-                            diagnostics.Add($"Message {message} was has been executing for {executionTime}.");
+                            diagnostics.Add($"Message {message} has been executing for {executionTime}.");
                         }
 
                         var response = messageFactory.CreateDiagnosticResponseMessage(message, isExecuting: true, isWaiting: false, diagnostics);
@@ -766,7 +743,7 @@ namespace Orleans.Runtime
 
                 foreach (var msg in RunningRequests)
                 {
-                    if (ReferenceEquals(msg, this.Blocking)) continue;
+                    if (ReferenceEquals(msg.Key, this.Blocking)) continue;
                     sb.AppendFormat("   Processing message: {0}", msg);
                 }
 

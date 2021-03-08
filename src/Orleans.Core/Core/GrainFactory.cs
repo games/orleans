@@ -17,19 +17,11 @@ namespace Orleans
         private GrainReferenceRuntime grainReferenceRuntime;
 
         /// <summary>
-        /// The collection of <see cref="IGrainMethodInvoker"/>s for their corresponding grain interface type.
-        /// </summary>
-        private readonly ConcurrentDictionary<Type, IGrainMethodInvoker> invokers = new ConcurrentDictionary<Type, IGrainMethodInvoker>();
-
-        /// <summary>
         /// The cache of typed system target references.
         /// </summary>
         private readonly Dictionary<(GrainId, Type), ISystemTarget> typedSystemTargetReferenceCache = new Dictionary<(GrainId, Type), ISystemTarget>();
 
-        /// <summary>
-        /// The cache of type metadata.
-        /// </summary>
-        private readonly TypeMetadataCache typeCache;
+        private readonly ImrGrainMethodInvokerProvider invokers;
         private readonly GrainReferenceActivator referenceActivator;
         private readonly GrainInterfaceTypeResolver interfaceTypeResolver;
         private readonly GrainInterfaceTypeToGrainTypeResolver interfaceTypeToGrainTypeResolver;
@@ -37,16 +29,16 @@ namespace Orleans
 
         public GrainFactory(
             IRuntimeClient runtimeClient,
-            TypeMetadataCache typeCache,
             GrainReferenceActivator referenceActivator,
             GrainInterfaceTypeResolver interfaceTypeResolver,
-            GrainInterfaceTypeToGrainTypeResolver interfaceToTypeResolver)
+            GrainInterfaceTypeToGrainTypeResolver interfaceToTypeResolver,
+            ImrGrainMethodInvokerProvider invokers)
         {
             this.runtimeClient = runtimeClient;
-            this.typeCache = typeCache;
             this.referenceActivator = referenceActivator;
             this.interfaceTypeResolver = interfaceTypeResolver;
             this.interfaceTypeToGrainTypeResolver = interfaceToTypeResolver;
+            this.invokers = invokers;
         }
 
         private GrainReferenceRuntime GrainReferenceRuntime => this.grainReferenceRuntime ??= (GrainReferenceRuntime)this.runtimeClient.GrainReferenceRuntime;
@@ -77,7 +69,7 @@ namespace Orleans
         public TGrainInterface GetGrain<TGrainInterface>(Guid primaryKey, string keyExtension, string grainClassNamePrefix = null)
             where TGrainInterface : IGrainWithGuidCompoundKey
         {
-            GrainFactoryBase.DisallowNullOrWhiteSpaceKeyExtensions(keyExtension);
+            DisallowNullOrWhiteSpaceKeyExtensions(keyExtension);
 
             var grainKey = GrainIdKeyExtensions.CreateGuidKey(primaryKey, keyExtension);
             return (TGrainInterface)GetGrain(typeof(TGrainInterface), grainKey, grainClassNamePrefix: grainClassNamePrefix);
@@ -87,7 +79,7 @@ namespace Orleans
         public TGrainInterface GetGrain<TGrainInterface>(long primaryKey, string keyExtension, string grainClassNamePrefix = null)
             where TGrainInterface : IGrainWithIntegerCompoundKey
         {
-            GrainFactoryBase.DisallowNullOrWhiteSpaceKeyExtensions(keyExtension);
+            DisallowNullOrWhiteSpaceKeyExtensions(keyExtension);
 
             var grainKey = GrainIdKeyExtensions.CreateIntegerKey(primaryKey, keyExtension);
             return (TGrainInterface)GetGrain(typeof(TGrainInterface), grainKey, grainClassNamePrefix: grainClassNamePrefix);
@@ -257,15 +249,25 @@ namespace Orleans
                 throw new ArgumentException($"The provided object must implement '{interfaceType.FullName}'.", nameof(obj));
             }
 
-            IGrainMethodInvoker invoker;
-            if (!this.invokers.TryGetValue(interfaceType, out invoker))
+            var grainInterfaceType = this.interfaceTypeResolver.GetGrainInterfaceType(interfaceType);
+            if (!this.invokers.TryGet(grainInterfaceType, out var invoker))
             {
-                var invokerType = this.typeCache.GetGrainMethodInvokerType(interfaceType);
-                invoker = (IGrainMethodInvoker)Activator.CreateInstance(invokerType);
-                this.invokers.TryAdd(interfaceType, invoker);
+                throw new KeyNotFoundException($"Could not find an invoker for interface {grainInterfaceType}");
             }
 
             return this.Cast(this.runtimeClient.CreateObjectReference(obj, invoker), interfaceType);
+        }
+
+        private static void DisallowNullOrWhiteSpaceKeyExtensions(string keyExt)
+        {
+            if (!string.IsNullOrWhiteSpace(keyExt)) return;
+
+            if (null == keyExt)
+            {
+                throw new ArgumentNullException(nameof(keyExt)); 
+            }
+            
+            throw new ArgumentException("Key extension is empty or white space.", nameof(keyExt));
         }
     }
 }

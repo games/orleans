@@ -1,13 +1,10 @@
 using System;
 using System.Collections.Generic;
 using System.Runtime.CompilerServices;
-using System.Runtime.InteropServices;
-using System.Runtime.Serialization;
 using System.Threading;
 using System.Threading.Tasks;
 using Orleans.Core;
 using Orleans.Runtime;
-using Orleans.Streams;
 
 namespace Orleans
 {
@@ -35,7 +32,7 @@ namespace Orleans
         /// <summary>
         /// Gets the IServiceProvider managed by the runtime. Null if this grain is not associated with a Runtime, such as when created directly for unit testing.
         /// </summary>
-        protected IServiceProvider ServiceProvider 
+        protected internal IServiceProvider ServiceProvider 
         {
             get { return Data?.ActivationServices ?? Runtime?.ServiceProvider; }
         }
@@ -92,11 +89,6 @@ namespace Orleans
         public string RuntimeIdentity
         {
             get { return Runtime?.SiloIdentity ?? string.Empty; }
-        }
-
-        internal SiloAddress SiloAddress
-        {
-            get { return Runtime?.SiloAddress ?? SiloAddress.Zero; }
         }
 
         /// <summary>
@@ -194,15 +186,6 @@ namespace Orleans
         {
             EnsureRuntime();
             return Runtime.ReminderRegistry.GetReminders();
-        }
-
-        protected IStreamProvider GetStreamProvider(string name)
-        {
-            if (string.IsNullOrWhiteSpace(name))
-                throw new ArgumentNullException(nameof(name));
-                
-            EnsureRuntime();
-            return this.ServiceProvider.GetRequiredServiceByName<IStreamProvider>(name);
         }
 
         /// <summary>

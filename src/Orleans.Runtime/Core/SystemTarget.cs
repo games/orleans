@@ -43,8 +43,6 @@ namespace Orleans.Runtime
             set { this.runtimeClient = value; }
         }
 
-        IGrainReferenceRuntime ISystemTargetBase.GrainReferenceRuntime => this.RuntimeClient.GrainReferenceRuntime;
-
         public GrainReference GrainReference => selfReference ??= this.RuntimeClient.ServiceProvider.GetRequiredService<GrainReferenceActivator>().CreateReference(this.id.GrainId, default);
 
         GrainId IGrainContext.GrainId => this.id.GrainId;
@@ -226,8 +224,7 @@ namespace Orleans.Runtime
                     {
                         this.MessagingTrace.OnEnqueueMessageOnActivation(msg, this);
                         var workItem = new RequestWorkItem(this, msg);
-                        Task task = TaskSchedulerUtils.WrapWorkItemAsTask(workItem);
-                        task.Start(this.WorkItemGroup.TaskScheduler);
+                        this.WorkItemGroup.TaskScheduler.QueueWorkItem(workItem);
                         break;
                     }
 
@@ -235,8 +232,7 @@ namespace Orleans.Runtime
                     {
                         this.MessagingTrace.OnEnqueueMessageOnActivation(msg, this);
                         var workItem = new ResponseWorkItem(this, msg);
-                        Task task = TaskSchedulerUtils.WrapWorkItemAsTask(workItem);
-                        task.Start(this.WorkItemGroup.TaskScheduler);
+                        this.WorkItemGroup.TaskScheduler.QueueWorkItem(workItem);
                         break;
                     }
 

@@ -16,7 +16,6 @@ namespace Orleans.Runtime.Scheduler
     [DebuggerDisplay("WorkItemGroup Name={Name} State={state}")]
     internal class WorkItemGroup : IWorkItem
     {
-        private static readonly WaitCallback ExecuteWorkItemCallback = obj => ((WorkItemGroup)obj).Execute();
         private enum WorkGroupStatus
         {
             Waiting = 0,
@@ -50,10 +49,7 @@ namespace Orleans.Runtime.Scheduler
 
         public DateTime TimeQueued { get; set; }
 
-        public TimeSpan TimeSinceQueued
-        {
-            get { return Utils.Since(TimeQueued); }
-        }
+        public TimeSpan TimeSinceQueued => Utils.Since(TimeQueued);
 
         public bool IsSystemPriority => this.GrainContext is SystemTarget systemTarget && !systemTarget.IsLowPriority;
 
@@ -76,34 +72,13 @@ namespace Orleans.Runtime.Scheduler
             }
         }
 
-        private int WorkItemCount
-        {
-            get { return workItems.Count; }
-        }
+        private int WorkItemCount => workItems.Count;
 
-        internal float AverageQueueLength
-        {
-            get
-            {
-                return 0;
-            }
-        }
+        internal float AverageQueueLength => 0;
 
-        internal float NumEnqueuedRequests
-        {
-            get
-            {
-                return 0;
-            }
-        }
+        internal float NumEnqueuedRequests => 0;
 
-        internal float ArrivalRate
-        {
-            get
-            {
-                return 0;
-            }
-        }
+        internal float ArrivalRate => 0;
 
         private bool HasWork => this.WorkItemCount != 0;
 
@@ -157,9 +132,9 @@ namespace Orleans.Runtime.Scheduler
                         {
 
                             sb.Append("QueueLength = " + WorkItemCount);
-                            sb.Append(String.Format(", State = {0}", state));
+                            sb.Append($", State = {state}");
                             if (state == WorkGroupStatus.Runnable)
-                                sb.Append(String.Format("; oldest item is {0} old", workItems.Count >= 0 ? workItems.Peek().ToString() : "null"));
+                                sb.Append($"; oldest item is {(workItems.Count >= 0 ? workItems.Peek().ToString() : "null")} old");
                         }
                         return sb.ToString();
                     });
@@ -287,12 +262,6 @@ namespace Orleans.Runtime.Scheduler
                     ?? wrapper.GetField("m_continuation", BindingFlags.Instance | BindingFlags.NonPublic)
                     )?.GetValue(o) is Action continuation)
                 return DumpAsyncState(continuation);
-
-#if !NETCOREAPP
-            if (o?.GetType() is { Name: "MoveNextRunner" } runner
-                && runner.GetField("m_stateMachine", BindingFlags.Instance | BindingFlags.NonPublic)?.GetValue(o) is object stateMachine)
-                return DumpAsyncState(stateMachine);
-#endif
 
             return o;
         }
@@ -462,13 +431,7 @@ namespace Orleans.Runtime.Scheduler
             }
         }
 
-        public override string ToString()
-        {
-            return String.Format("{0}WorkItemGroup:Name={1},WorkGroupStatus={2}",
-                IsSystemGroup ? "System*" : "",
-                Name,
-                state);
-        }
+        public override string ToString() => $"{(IsSystemGroup ? "System*" : "")}WorkItemGroup:Name={Name},WorkGroupStatus={state}";
 
         public string DumpStatus()
         {
@@ -512,11 +475,7 @@ namespace Orleans.Runtime.Scheduler
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static void ScheduleExecution(WorkItemGroup workItem)
         {
-#if NETCOREAPP
             ThreadPool.UnsafeQueueUserWorkItem(workItem, preferLocal: true);
-#else
-            ThreadPool.UnsafeQueueUserWorkItem(ExecuteWorkItemCallback, workItem);
-#endif
         }
     }
 }

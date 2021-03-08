@@ -6,7 +6,6 @@ using Orleans.Runtime.Configuration;
 using Orleans.Runtime.ConsistentRing;
 using Orleans.Runtime.Counters;
 using Orleans.Runtime.GrainDirectory;
-using Orleans.Runtime.LogConsistency;
 using Orleans.Runtime.MembershipService;
 using Orleans.Metadata;
 using Orleans.Runtime.Messaging;
@@ -19,8 +18,6 @@ using Orleans.Runtime.Versions.Compatibility;
 using Orleans.Runtime.Versions.Selector;
 using Orleans.Serialization;
 using Orleans.Statistics;
-using Orleans.Streams;
-using Orleans.Streams.Core;
 using Orleans.Timers;
 using Orleans.Versions;
 using Orleans.Versions.Compatibility;
@@ -28,7 +25,6 @@ using Orleans.Versions.Selector;
 using Orleans.Providers;
 using Orleans.Runtime;
 using Orleans.Transactions;
-using Orleans.LogConsistency;
 using Microsoft.Extensions.Logging;
 using Orleans.ApplicationParts;
 using Orleans.Runtime.Utilities;
@@ -47,7 +43,7 @@ namespace Orleans.Hosting
 {
     internal static class DefaultSiloServices
     {
-        internal static void AddDefaultServices(IApplicationPartManager applicationPartManager, IServiceCollection services)
+        internal static void AddDefaultServices(IServiceCollection services)
         {
             services.AddOptions();
 
@@ -88,15 +84,11 @@ namespace Orleans.Hosting
             services.TryAddSingleton<IAppEnvironmentStatistics, AppEnvironmentStatistics>();
             services.TryAddSingleton<IHostEnvironmentStatistics, NoOpHostEnvironmentStatistics>();
             services.TryAddSingleton<SiloStatisticsManager>();
-            services.TryAddFromExisting<IStatisticsManager, SiloStatisticsManager>();
             services.TryAddSingleton<ApplicationRequestsStatisticsGroup>();
             services.TryAddSingleton<StageAnalysisStatisticsGroup>();
             services.TryAddSingleton<SchedulerStatisticsGroup>();
             services.TryAddSingleton<SerializationStatisticsGroup>();
             services.TryAddSingleton<OverloadDetector>();
-
-            // queue balancer contructing related
-            services.TryAddTransient<IStreamQueueBalancer, ConsistentRingQueueBalancer>();
 
             services.TryAddSingleton<FallbackSystemTarget>();
             services.TryAddSingleton<LifecycleSchedulingSystemTarget>();
@@ -104,6 +96,7 @@ namespace Orleans.Hosting
             services.AddLogging();
             services.TryAddSingleton<ITimerRegistry, TimerRegistry>();
             services.TryAddSingleton<IReminderRegistry, ReminderRegistry>();
+            services.AddTransient<IConfigurationValidator, ReminderOptionsValidator>();
             services.TryAddSingleton<GrainRuntime>();
             services.TryAddSingleton<IGrainRuntime, GrainRuntime>();
             services.TryAddSingleton<IGrainCancellationTokenRuntime, GrainCancellationTokenRuntime>();
@@ -123,10 +116,8 @@ namespace Orleans.Hosting
             services.TryAddSingleton<ImrRpcProvider>();
             services.TryAddSingleton<ImrGrainMethodInvokerProvider>();
             services.TryAddSingleton<GrainReferenceSerializer>();
-            services.TryAddSingleton<BinaryFormatterGrainReferenceSurrogateSelector>();
             services.TryAddSingleton<GrainReferenceKeyStringConverter>();
             services.AddSingleton<GrainVersionManifest>();
-            services.TryAddSingleton<TypeMetadataCache>();
             services.TryAddSingleton<GrainBindingsResolver>();
             services.TryAddSingleton<GrainTypeComponentsResolver>();
             services.TryAddSingleton<ActivationDirectory>();
@@ -148,6 +139,7 @@ namespace Orleans.Hosting
             services.TryAddSingleton<MessageCenter>();
             services.TryAddFromExisting<IMessageCenter, MessageCenter>();
             services.TryAddSingleton(FactoryUtility.Create<MessageCenter, Gateway>);
+            services.TryAddSingleton<IConnectedClientCollection>(sp => (IConnectedClientCollection)sp.GetRequiredService<MessageCenter>().Gateway ?? new EmptyConnectedClientCollection());
             services.TryAddSingleton<Dispatcher>(sp => sp.GetRequiredService<Catalog>().Dispatcher);
             services.TryAddSingleton<ActivationMessageScheduler>(sp => sp.GetRequiredService<Catalog>().ActivationMessageScheduler);
             services.TryAddSingleton<InsideRuntimeClient>();
@@ -188,24 +180,15 @@ namespace Orleans.Hosting
             services.TryAddFromExisting<IClusterMembershipService, ClusterMembershipService>();
             services.AddFromExisting<ILifecycleParticipant<ISiloLifecycle>, ClusterMembershipService>();
 
-            services.TryAddSingleton<ClientObserverRegistrar>();
-            services.TryAddFromExisting<ILifecycleParticipant<ISiloLifecycle>, ClientObserverRegistrar>();
+            services.TryAddSingleton<ClientDirectory>();
+            services.AddFromExisting<ILocalClientDirectory, ClientDirectory>();
+            services.AddFromExisting<ILifecycleParticipant<ISiloLifecycle>, ClientDirectory>();
+            
             services.TryAddSingleton<SiloProviderRuntime>();
-            services.TryAddFromExisting<IStreamProviderRuntime, SiloProviderRuntime>();
             services.TryAddFromExisting<IProviderRuntime, SiloProviderRuntime>();
-            services.TryAddSingleton<ImplicitStreamSubscriberTable>();
-            services.AddSingleton<IConfigureGrainContext, StreamConsumerGrainContextAction>();
-            services.AddSingleton<IStreamNamespacePredicateProvider, DefaultStreamNamespacePredicateProvider>();
-            services.AddSingleton<IStreamNamespacePredicateProvider, ConstructorStreamNamespacePredicateProvider>();
-            services.AddSingletonKeyedService<string, IStreamIdMapper, DefaultStreamIdMapper>(DefaultStreamIdMapper.Name);
-            services.AddTransientKeyedService<Type, IGrainExtension>(typeof(IStreamConsumerExtension), (sp, _) =>
-            {
-                var runtime = sp.GetRequiredService<IStreamProviderRuntime>();
-                return new StreamConsumerExtension(runtime, RuntimeContext.CurrentGrainContext?.GrainInstance as IStreamSubscriptionObserver);
-            });
+
             services.TryAddSingleton<MessageFactory>();
 
-            services.TryAddSingleton<Factory<Grain, ILogConsistencyProtocolServices>>(FactoryUtility.Create<Grain, ProtocolServices>);
             services.TryAddSingleton(FactoryUtility.Create<GrainDirectoryPartition>);
 
             // Placement
@@ -273,7 +256,6 @@ namespace Orleans.Hosting
             services.AddSingleton<IncomingRequestMonitor>();
             services.AddFromExisting<ILifecycleParticipant<ISiloLifecycle>, IncomingRequestMonitor>();
 
-            services.TryAddSingleton<IStreamSubscriptionManagerAdmin>(sp => new StreamSubscriptionManagerAdmin(sp.GetRequiredService<IStreamProviderRuntime>()));
             services.TryAddSingleton<IConsistentRingProvider>(
                 sp =>
                 {
@@ -296,19 +278,20 @@ namespace Orleans.Hosting
                 sp.GetRequiredService<IOptions<SiloMessagingOptions>>().Value.LargeMessageWarningThreshold));
             services.TryAddSingleton<ITypeResolver, CachedTypeResolver>();
             services.TryAddSingleton<IFieldUtils, FieldUtils>();
-            services.AddSingleton<BinaryFormatterSerializer>();
-            services.AddSingleton<BinaryFormatterISerializableSerializer>();
-            services.AddFromExisting<IKeyedSerializer, BinaryFormatterISerializableSerializer>();
-#pragma warning disable CS0618 // Type or member is obsolete
+
+            // Register the ISerializable serializer first, so that it takes precedence
+            services.AddSingleton<DotNetSerializableSerializer>();
+            services.AddFromExisting<IKeyedSerializer, DotNetSerializableSerializer>();
+
+
             services.AddSingleton<ILBasedSerializer>();
             services.AddFromExisting<IKeyedSerializer, ILBasedSerializer>();
-#pragma warning restore CS0618 // Type or member is obsolete
 
             // Transactions
             services.TryAddSingleton<ITransactionAgent, DisabledTransactionAgent>();
 
             // Application Parts
-            services.TryAddSingleton<IApplicationPartManager>(applicationPartManager);
+            var applicationPartManager = services.GetApplicationPartManager();
             applicationPartManager.AddApplicationPart(new AssemblyPart(typeof(RuntimeVersion).Assembly) { IsFrameworkAssembly = true });
             applicationPartManager.AddApplicationPart(new AssemblyPart(typeof(Silo).Assembly) { IsFrameworkAssembly = true });
             applicationPartManager.AddFeatureProvider(new BuiltInTypesSerializationFeaturePopulator());
@@ -427,6 +410,12 @@ namespace Orleans.Hosting
             services.AddSingleton<ILifecycleParticipant<ISiloLifecycle>, GatewayConnectionListener>();
             services.AddSingleton<SocketSchedulers>();
             services.AddSingleton<SharedMemoryPool>();
+
+            // Logging helpers
+            services.AddSingleton<SiloLoggingHelper>();
+            services.AddFromExisting<ILifecycleParticipant<ISiloLifecycle>, SiloLoggingHelper>();
+            services.AddFromExisting<IGrainIdLoggingHelper, SiloLoggingHelper>();
+            services.AddFromExisting<IInvokeMethodRequestLoggingHelper, SiloLoggingHelper>();
         }
     }
 }

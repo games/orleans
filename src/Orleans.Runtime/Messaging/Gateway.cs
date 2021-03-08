@@ -14,27 +14,25 @@ using Orleans.Internal;
 
 namespace Orleans.Runtime.Messaging
 {
-    internal class Gateway
+    internal class Gateway : IConnectedClientCollection
     {
-        private readonly MessageCenter messageCenter;
         private readonly GatewayClientCleanupAgent dropper;
 
         // clients is the main authorative collection of all connected clients. 
         // Any client currently in the system appears in this collection. 
         // In addition, we use clientConnections collection for fast retrival of ClientState. 
         // Anything that appears in those 2 collections should also appear in the main clients collection.
-        private readonly ConcurrentDictionary<ClientGrainId, ClientState> clients;
-        private readonly ConcurrentDictionary<GatewayInboundConnection, ClientState> clientConnections;
+        private readonly ConcurrentDictionary<ClientGrainId, ClientState> clients = new();
+        private readonly Dictionary<GatewayInboundConnection, ClientState> clientConnections = new();
         private readonly SiloAddress gatewayAddress;
         private readonly GatewaySender sender;
         private readonly ClientsReplyRoutingCache clientsReplyRoutingCache;
-        private ClientObserverRegistrar clientRegistrar;
-        private readonly object lockable;
 
         private readonly ILogger logger;
         private readonly ILoggerFactory loggerFactory;
         private readonly SiloMessagingOptions messagingOptions;
-        
+        private long clientsCollectionVersion = 0;
+
         public Gateway(
             MessageCenter msgCtr, 
             ILocalSiloDetails siloDetails, 
@@ -44,33 +42,38 @@ namespace Orleans.Runtime.Messaging
         {
             this.messagingOptions = options.Value;
             this.loggerFactory = loggerFactory;
-            messageCenter = msgCtr;
             this.logger = this.loggerFactory.CreateLogger<Gateway>();
             dropper = new GatewayClientCleanupAgent(this, loggerFactory, messagingOptions.ClientDropTimeout);
-            clients = new ConcurrentDictionary<ClientGrainId, ClientState>();
-            clientConnections = new ConcurrentDictionary<GatewayInboundConnection, ClientState>();
             clientsReplyRoutingCache = new ClientsReplyRoutingCache(messagingOptions.ResponseTimeout);
             this.gatewayAddress = siloDetails.GatewayAddress;
             this.sender = new GatewaySender(this, msgCtr, messageFactory, loggerFactory.CreateLogger<GatewaySender>());
-            lockable = new object();
         }
 
-        internal void Start(ClientObserverRegistrar clientRegistrar)
+        public static ActivationAddress GetClientActivationAddress(GrainId clientId, SiloAddress siloAddress)
         {
-            this.clientRegistrar = clientRegistrar;
-            this.clientRegistrar.SetGateway(this);
+            // Need to pick a unique deterministic ActivationId for this client.
+            // We store it in the grain directory and there for every GrainId we use ActivationId as a key
+            // so every GW needs to behave as a different "activation" with a different ActivationId (its not enough that they have different SiloAddress)
+            string stringToHash = clientId.ToString() + siloAddress.Endpoint + siloAddress.Generation.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            Guid hash = Utils.CalculateGuidHash(stringToHash);
+            var activationId = ActivationId.GetActivationId(UniqueKey.NewKey(hash));
+            return ActivationAddress.GetAddress(siloAddress, clientId, activationId);
+        }
+
+        internal void Start()
+        {
             dropper.Start();
         }
 
         internal async Task SendStopSendMessages(IInternalGrainFactory grainFactory)
         {
-            lock (lockable)
+            lock (clients)
             {
-                foreach (var clientState in this.clients.Values)
+                foreach (var client in clients)
                 {
-                    if (clientState.IsConnected)
+                    if (client.Value.IsConnected)
                     {
-                        var observer = ClientGatewayObserver.GetObserver(grainFactory, clientState.Id);
+                        var observer = ClientGatewayObserver.GetObserver(grainFactory, client.Key);
                         observer.StopSendingToGateway(this.gatewayAddress);
                     }
                 }
@@ -83,24 +86,31 @@ namespace Orleans.Runtime.Messaging
             dropper.Stop();
         }
 
-        internal ICollection<ClientGrainId> GetConnectedClients()
+        long IConnectedClientCollection.Version => Interlocked.Read(ref clientsCollectionVersion);
+
+        List<GrainId> IConnectedClientCollection.GetConnectedClientIds()
         {
-            return clients.Keys;
+            var result = new List<GrainId>();
+            foreach (var pair in clients)
+            {
+                result.Add(pair.Key.GrainId);
+            }
+
+            return result;
         }
 
         internal void RecordOpenedConnection(GatewayInboundConnection connection, ClientGrainId clientId)
         {
-            lock (lockable)
+            logger.LogInformation((int)ErrorCode.GatewayClientOpenedSocket, "Recorded opened connection from endpoint {EndPoint}, client ID {ClientId}.", connection.RemoteEndPoint, clientId);
+            lock (clients)
             {
-                logger.LogInformation((int)ErrorCode.GatewayClientOpenedSocket, "Recorded opened connection from endpoint {EndPoint}, client ID {ClientId}.", connection.RemoteEndPoint, clientId);
-                ClientState clientState;
-                if (clients.TryGetValue(clientId, out clientState))
+                if (clients.TryGetValue(clientId, out var clientState))
                 {
                     var oldSocket = clientState.Connection;
                     if (oldSocket != null)
                     {
                         // The old socket will be closed by itself later.
-                        clientConnections.TryRemove(oldSocket, out _);
+                        clientConnections.Remove(oldSocket);
                     }
                 }
                 else
@@ -111,7 +121,7 @@ namespace Orleans.Runtime.Messaging
                 }
                 clientState.RecordConnection(connection);
                 clientConnections[connection] = clientState;
-                clientRegistrar.ClientAdded(clientId);
+                clientsCollectionVersion++;
             }
         }
 
@@ -119,18 +129,20 @@ namespace Orleans.Runtime.Messaging
         {
             if (connection == null) return;
 
-            lock (lockable)
+            ClientState clientState;
+            lock (clients)
             {
-                if (!clientConnections.TryGetValue(connection, out var clientState)) return;
+                if (!clientConnections.Remove(connection, out clientState)) return;
 
-                clientConnections.TryRemove(connection, out _);
                 clientState.RecordDisconnection();
-                logger.LogInformation(
-                    (int)ErrorCode.GatewayClientClosedSocket,
-                    "Recorded closed socket from endpoint {Endpoint}, client ID {clientId}.",
-                    connection.RemoteEndPoint?.ToString() ?? "null",
-                    clientState.Id);
+                clientsCollectionVersion++;
             }
+
+            logger.LogInformation(
+                (int)ErrorCode.GatewayClientClosedSocket,
+                "Recorded closed socket from endpoint {Endpoint}, client ID {clientId}.",
+                connection.RemoteEndPoint?.ToString() ?? "null",
+                clientState.Id);
         }
 
         internal SiloAddress TryToReroute(Message msg)
@@ -157,19 +169,9 @@ namespace Orleans.Runtime.Messaging
             return clientsReplyRoutingCache.TryFindClientRoute(msg.TargetGrain, out gateway) ? gateway : null;
         }
 
-        internal void DropDisconnectedClients()
-        {
-            lock (lockable)
-            {
-                List<ClientState> clientsToDrop = clients.Values.Where(cs => cs.ReadyToDrop()).ToList();
-                foreach (ClientState client in clientsToDrop)
-                    DropClient(client);
-            }
-        }
-
         internal void DropExpiredRoutingCachedEntries()
         {
-            lock (lockable)
+            lock (clients)
             {
                 clientsReplyRoutingCache.DropExpiredEntries();
             }
@@ -183,27 +185,34 @@ namespace Orleans.Runtime.Messaging
                     && siloAddress.Endpoint.Port == this.gatewayAddress.Endpoint.Port
                     && siloAddress.Generation == this.gatewayAddress.Generation);
         }
-        
-        // This function is run under global lock
-        // There is NO need to acquire individual ClientState lock, since we only access client Id (immutable) and close an older socket.
-        private void DropClient(ClientState client)
-        {
-            logger.Info(ErrorCode.GatewayDroppingClient, "Dropping client {0}, {1} after disconnect with no reconnect", 
-                client.Id, DateTime.UtcNow.Subtract(client.DisconnectedSince));
-            
-            clients.TryRemove(client.Id, out _);
-            clientRegistrar.ClientDropped(client.Id);
 
-            GatewayInboundConnection oldConnection = client.Connection;
-            if (oldConnection != null)
+        // There is NO need to acquire individual ClientState lock, since we only close an older socket.
+        internal void DropDisconnectedClients()
+        {
+            foreach (var kv in clients)
             {
-                // this will not happen, since we drop only already disconnected clients, for socket is already null. But leave this code just to be sure.
-                client.RecordDisconnection();
-                clientConnections.TryRemove(oldConnection, out _);
-                oldConnection.Close();
+                if (kv.Value.ReadyToDrop())
+                {
+                    lock (clients)
+                    {
+                        if (clients.TryGetValue(kv.Key, out var client) && client.ReadyToDrop())
+                        {
+                            if (logger.IsEnabled(LogLevel.Information))
+                            {
+                                logger.LogInformation(
+                                    (int)ErrorCode.GatewayDroppingClient,
+                                    "Dropping client {ClientId}, {IdleDuration} after disconnect with no reconnect",
+                                    kv.Key,
+                                    DateTime.UtcNow.Subtract(client.DisconnectedSince));
+                            }
+
+                            clients.TryRemove(kv.Key, out _);
+                            clientsCollectionVersion++;
+                            MessagingStatisticsGroup.ConnectedClientCount.DecrementBy(1);
+                        }
+                    }
+                }
             }
-            
-            MessagingStatisticsGroup.ConnectedClientCount.DecrementBy(1);
         }
 
         /// <summary>
@@ -214,15 +223,13 @@ namespace Orleans.Runtime.Messaging
         internal bool TryDeliverToProxy(Message msg)
         {
             // See if it's a grain we're proxying.
-            ClientState client;
-
             var targetGrain = msg.TargetGrain;
             if (!ClientGrainId.TryParse(targetGrain, out var clientId))
             {
                 return false;
             }
 
-            if (!clients.TryGetValue(clientId, out client))
+            if (!clients.TryGetValue(clientId, out var client))
             {
                 return false;
             }
@@ -252,18 +259,17 @@ namespace Orleans.Runtime.Messaging
         private class ClientState
         {
             private readonly TimeSpan clientDropTimeout;
-            internal Queue<Message> PendingToSend { get; private set; }
+            internal Queue<Message> PendingToSend { get; } = new();
             internal GatewayInboundConnection Connection { get; private set; }
             internal DateTime DisconnectedSince { get; private set; }
-            internal ClientGrainId Id { get; private set; }
+            internal ClientGrainId Id { get; }
 
-            internal bool IsConnected => this.Connection != null;
+            public bool IsConnected => this.Connection != null;
 
             internal ClientState(ClientGrainId id, TimeSpan clientDropTimeout)
             {
                 Id = id;
                 this.clientDropTimeout = clientDropTimeout;
-                PendingToSend = new Queue<Message>();
             }
 
             internal void RecordDisconnection()
@@ -317,45 +323,41 @@ namespace Orleans.Runtime.Messaging
         private class ClientsReplyRoutingCache
         {
             // for every client: the Gateway to use to route repies back to it plus the last time that client connected via this Gateway.
-            private readonly ConcurrentDictionary<GrainId, Tuple<SiloAddress, DateTime>> clientRoutes;
+            private readonly ConcurrentDictionary<GrainId, Tuple<SiloAddress, DateTime>> clientRoutes = new();
             private readonly TimeSpan TIME_BEFORE_ROUTE_CACHED_ENTRY_EXPIRES;
 
             internal ClientsReplyRoutingCache(TimeSpan responseTimeout)
             {
-                clientRoutes = new ConcurrentDictionary<GrainId, Tuple<SiloAddress, DateTime>>();
                 TIME_BEFORE_ROUTE_CACHED_ENTRY_EXPIRES = responseTimeout.Multiply(5);
             }
 
             internal void RecordClientRoute(GrainId client, SiloAddress gateway)
             {
-                var now = DateTime.UtcNow;
-                clientRoutes.AddOrUpdate(client, new Tuple<SiloAddress, DateTime>(gateway, now), (k, v) => new Tuple<SiloAddress, DateTime>(gateway, now));
+                clientRoutes[client] = new(gateway, DateTime.UtcNow);
             }
 
             internal bool TryFindClientRoute(GrainId client, out SiloAddress gateway)
             {
-                gateway = null;
-                Tuple<SiloAddress, DateTime> tuple;
-                bool ret = clientRoutes.TryGetValue(client, out tuple);
-                if (ret)
+                if (clientRoutes.TryGetValue(client, out var tuple))
+                {
                     gateway = tuple.Item1;
+                    return true;
+                }
 
-                return ret;
+                gateway = null;
+                return false;
             }
 
             internal void DropExpiredEntries()
             {
-                List<GrainId> clientsToDrop = clientRoutes.Where(route => Expired(route.Value.Item2)).Select(kv => kv.Key).ToList();
-                foreach (GrainId client in clientsToDrop)
+                var expiredTime = DateTime.UtcNow - TIME_BEFORE_ROUTE_CACHED_ENTRY_EXPIRES;
+                foreach (var client in clientRoutes)
                 {
-                    Tuple<SiloAddress, DateTime> tuple;
-                    clientRoutes.TryRemove(client, out tuple);
+                    if (client.Value.Item2 < expiredTime)
+                    {
+                        clientRoutes.TryRemove(client.Key, out _);
+                    }
                 }
-            }
-
-            private bool Expired(DateTime lastUsed)
-            {
-                return DateTime.UtcNow.Subtract(lastUsed) >= TIME_BEFORE_ROUTE_CACHED_ENTRY_EXPIRES;
             }
         }
 
@@ -475,7 +477,7 @@ namespace Orleans.Runtime.Messaging
                 catch (Exception exception)
                 {
                     gateway.RecordClosedConnection(connection);
-                    connection.Abort(new ConnectionAbortedException("Exception posting a message to sender. See InnerException for details.", exception));
+                    connection.CloseAsync(new ConnectionAbortedException("Exception posting a message to sender. See InnerException for details.", exception)).Ignore();
                     return false;
                 }
             }

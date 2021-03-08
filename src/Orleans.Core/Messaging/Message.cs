@@ -297,7 +297,7 @@ namespace Orleans.Runtime
             if (!dropExpiredMessages) return false;
 
             GrainId id = TargetGrain;
-            if (id == null) return false;
+            if (id.IsDefault) return false;
 
             // don't set expiration for one way, system target and system grain messages.
             return Direction != Directions.OneWay && !id.IsSystemTarget();
@@ -435,7 +435,7 @@ namespace Orleans.Runtime
                         break;
                 }
             }
-            return String.Format("{0}{1}{2}{3}{4} {5}->{6} #{7}{8}",
+            return String.Format("{0}{1}{2}{3}{4} {5}->{6}{7} #{8}{9}",
                 IsReadOnly ? "ReadOnly " : "", //0
                 IsAlwaysInterleave ? "IsAlwaysInterleave " : "", //1
                 IsNewPlacement ? "NewPlacement " : "", // 2
@@ -443,8 +443,9 @@ namespace Orleans.Runtime
                 Direction, //4
                 $"[{SendingSilo} {SendingGrain} {SendingActivation}]", //5
                 $"[{TargetSilo} {TargetGrain} {TargetActivation}]", //6
-                Id, //7
-                ForwardCount > 0 ? "[ForwardCount=" + ForwardCount + "]" : ""); //8
+                BodyObject is InvokeMethodRequest request ? $" {request.ToString()}" : string.Empty, // 7
+                Id, //8
+                ForwardCount > 0 ? "[ForwardCount=" + ForwardCount + "]" : ""); //9
         }
 
         internal void SetTargetPlacement(PlacementResult value)
@@ -464,7 +465,7 @@ namespace Orleans.Runtime
             {
                 history.Append(TargetSilo).Append(":");
             }
-            if (TargetGrain != null)
+            if (!TargetGrain.IsDefault)
             {
                 history.Append(TargetGrain).Append(":");
             }
@@ -499,10 +500,7 @@ namespace Orleans.Runtime
             timeInterval.Restart();
         }
 
-        public TimeSpan Elapsed
-        {
-            get { return timeInterval.Elapsed; }
-        }
+        public TimeSpan Elapsed => timeInterval == null ? TimeSpan.Zero : timeInterval.Elapsed;
 
         public static Message CreatePromptExceptionResponse(Message request, Exception exception)
         {
@@ -513,17 +511,6 @@ namespace Orleans.Runtime
                 Result = Message.ResponseTypes.Error,
                 BodyObject = Response.ExceptionResponse(exception)
             };
-        }
-
-        private static int BufferLength(List<ArraySegment<byte>> buffer)
-        {
-            var result = 0;
-            for (var i = 0; i < buffer.Count; i++)
-            {
-                result += buffer[i].Count;
-            }
-
-            return result;
         }
 
         [Serializable]

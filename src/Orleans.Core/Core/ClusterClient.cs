@@ -8,7 +8,6 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Orleans.Configuration;
 using Orleans.Runtime;
-using Orleans.Streams;
 using Microsoft.Extensions.Hosting;
 using Orleans.Hosting;
 
@@ -20,6 +19,7 @@ namespace Orleans
     internal class ClusterClient : IInternalClusterClient
     {
         private readonly OutsideRuntimeClient runtimeClient;
+        private readonly ILogger<ClusterClient> logger;
         private readonly ClusterClientLifecycle clusterClientLifecycle;
         private readonly AsyncLock initLock = new AsyncLock();
         private readonly ClientApplicationLifetime applicationLifetime;
@@ -44,6 +44,7 @@ namespace Orleans
         public ClusterClient(OutsideRuntimeClient runtimeClient, ILoggerFactory loggerFactory, IOptions<ClientMessagingOptions> clientMessagingOptions)
         {
             this.runtimeClient = runtimeClient;
+            this.logger = loggerFactory.CreateLogger<ClusterClient>();
             this.clusterClientLifecycle = new ClusterClientLifecycle(loggerFactory.CreateLogger<LifecycleSubject>());
 
             //set PropagateActivityId flag from node config
@@ -79,9 +80,6 @@ namespace Orleans
         public IServiceProvider ServiceProvider => this.runtimeClient.ServiceProvider;
 
         /// <inheritdoc />
-        IStreamProviderRuntime IInternalClusterClient.StreamProviderRuntime => this.runtimeClient.CurrentStreamProviderRuntime;
-
-        /// <inheritdoc />
         private IInternalGrainFactory InternalGrainFactory
         {
             get
@@ -94,20 +92,13 @@ namespace Orleans
         /// <summary>
         /// Gets a value indicating whether or not this instance is being disposed.
         /// </summary>
-        private bool IsDisposing => this.state == LifecycleState.Disposed ||
-                                    this.state == LifecycleState.Disposing;
-
-        /// <inheritdoc />
-        public IStreamProvider GetStreamProvider(string name)
+        private bool IsDisposing => this.state switch
         {
-            this.ThrowIfDisposedOrNotInitialized();
-            if (string.IsNullOrWhiteSpace(name))
-            {
-                throw new ArgumentNullException(nameof(name));
-            }
-
-            return this.runtimeClient.ServiceProvider.GetRequiredServiceByName<IStreamProvider>(name);
-        }
+            LifecycleState.Disposing => true,
+            LifecycleState.Disposed => true,
+            LifecycleState.Invalid => true,
+            _ => false
+        };
 
         /// <inheritdoc />
         public async Task Connect(Func<Exception, Task<bool>> retryFilter = null)
@@ -146,6 +137,8 @@ namespace Orleans
                 if (this.state == LifecycleState.Disposed) return;
                 try
                 {
+                    logger.LogInformation("Client shutting down");
+
                     this.state = LifecycleState.Disposing;
                     CancellationToken canceled = CancellationToken.None;
                     if (!gracefully)
@@ -158,9 +151,12 @@ namespace Orleans
                     await this.clusterClientLifecycle.OnStop(canceled).ConfigureAwait(false);
 
                     this.runtimeClient?.Reset(gracefully);
+                    this.state = LifecycleState.Disposed;
                 }
                 finally
                 {
+                    logger.LogInformation("Client shutdown completed");
+
                     // If disposal failed, the system is in an invalid state.
                     if (this.state == LifecycleState.Disposing) this.state = LifecycleState.Invalid;
                 }

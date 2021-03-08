@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Orleans.Configuration;
@@ -15,6 +16,7 @@ using Orleans.TestingHost;
 using Tester;
 using Tester.AzureUtils;
 using Tester.AzureUtils.Streaming;
+using Tester.AzureUtils.Utilities;
 using TestExtensions;
 using UnitTests.GrainInterfaces;
 using UnitTests.Grains;
@@ -41,13 +43,14 @@ namespace UnitTests.StreamingTests
         private string StreamNamespace;
         private readonly ITestOutputHelper output;
         private const int queueCount = 8;
-        protected override void ConfigureTestCluster(TestClusterBuilder builder)
+        protected override void ConfigureTestCluster(Orleans.TestingHost.TestClusterBuilder builder)
         {
             TestUtils.CheckForAzureStorage();
-            builder.AddSiloBuilderConfigurator<SiloBuilderConfigurator>();
+            builder.AddSiloBuilderConfigurator<TestClusterBuilder>();
+            builder.AddClientBuilderConfigurator<TestClusterBuilder>();
         }
 
-        private class SiloBuilderConfigurator : ISiloConfigurator
+        private class TestClusterBuilder : ISiloConfigurator, IClientBuilderConfigurator
         {
             public void Configure(ISiloBuilder hostBuilder)
             {
@@ -78,6 +81,8 @@ namespace UnitTests.StreamingTests
                         }))
                     .AddMemoryGrainStorage("MemoryStore", options => options.NumStorageGrains = 1);
             }
+
+            public void Configure(IConfiguration configuration, Orleans.IClientBuilder clientBuilder) => clientBuilder.AddStreaming();
         }
 
         public StreamLimitTests(ITestOutputHelper output)
@@ -567,7 +572,7 @@ namespace UnitTests.StreamingTests
             for (int i = 0; i < numStreams; i++)
             {
                 var streamId = new InternalStreamId(streamProviderName, streamIds[i]);
-                string extKey = streamProviderName + "_" + this.StreamNamespace;
+                _ = streamProviderName + "_" + this.StreamNamespace;
 
                 IPubSubRendezvousGrain pubsub = this.GrainFactory.GetGrain<IPubSubRendezvousGrain>(streamId.ToString());
 
@@ -645,8 +650,7 @@ namespace UnitTests.StreamingTests
         {
             var consumers = new List<IStreamLifecycleConsumerGrain>();
             var promises = new List<Task>();
-
-            long consumerIdStart = random.Next();
+            _ = random.Next();
             for (int loopCount = 0; loopCount < numConsumers; loopCount++)
             {
                 var grain = this.GrainFactory.GetGrain<IStreamLifecycleConsumerGrain>(Guid.NewGuid());
@@ -794,13 +798,10 @@ namespace UnitTests.StreamingTests
             List<IStreamLifecycleProducerGrain> producers, List<IStreamLifecycleConsumerGrain> consumers,
             bool useFanOut)
         {
-            long nextGrainId = random.Next();
-
             //var promises = new List<Task>();
             AsyncPipeline pipeline = new AsyncPipeline(InitPipelineSize);
 
             // Consumers
-            long consumerIdStart = nextGrainId;
             for (int loopCount = 0; loopCount < numConsumers; loopCount++)
             {
                 var grain = this.GrainFactory.GetGrain<IStreamLifecycleConsumerGrain>(Guid.NewGuid());
@@ -833,10 +834,8 @@ namespace UnitTests.StreamingTests
                 //output.WriteLine("InitializeTopology: Waiting for {0} consumers to initialize", pipeline.Count);
                 pipeline.Wait();
             }
-            nextGrainId += numConsumers;
 
             // Producers
-            long producerIdStart = nextGrainId;
             pipeline = new AsyncPipeline(InitPipelineSize);
             for (int loopCount = 0; loopCount < numProducers; loopCount++)
             {

@@ -1,4 +1,3 @@
-#if !NETCOREAPP
 using System;
 using System.Linq;
 using System.Threading.Tasks;
@@ -28,10 +27,7 @@ namespace Tester.HeterogeneousSilosTests
         private void SetupAndDeployCluster(Type defaultPlacementStrategy, params Type[] blackListedTypes)
         {
             cluster?.StopAllSilos();
-            var builder = new TestClusterBuilder(1)
-            {
-                CreateSiloAsync = AppDomainSiloHandle.Create
-            };
+            var builder = new TestClusterBuilder(1);
             builder.Properties["DefaultPlacementStrategy"] = RuntimeTypeNameFormatter.Format(defaultPlacementStrategy);
             builder.Properties["BlacklistedGrainTypes"] = string.Join("|", blackListedTypes.Select(t => t.FullName));
             builder.AddSiloBuilderConfigurator<SiloConfigurator>();
@@ -215,4 +211,3 @@ namespace Tester.HeterogeneousSilosTests
         }
     }
 }
-#endif

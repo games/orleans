@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Concurrent;
-using System.Collections.Generic;
 using System.Diagnostics;
 using System.Net;
 using System.Threading;
@@ -11,13 +10,11 @@ using Microsoft.Extensions.Options;
 using Orleans.ClientObservers;
 using Orleans.CodeGeneration;
 using Orleans.Configuration;
-using Orleans.Internal;
 using Orleans.Messaging;
 using Orleans.Providers;
 using Orleans.Runtime;
 using Orleans.Runtime.Configuration;
 using Orleans.Serialization;
-using Orleans.Streams;
 
 namespace Orleans
 {
@@ -38,8 +35,6 @@ namespace Orleans
         private readonly MessagingTrace messagingTrace;
         private readonly ClientGrainId clientId;
         private ThreadTrackingStatistic incomingMessagesThreadTimeTracking;
-
-        private static readonly TimeSpan ResetTimeout = TimeSpan.FromMinutes(1);
 
         private const string BARS = "----------";
         
@@ -64,11 +59,6 @@ namespace Orleans
         public string CurrentActivationIdentity
         {
             get { return CurrentActivationAddress.ToString(); }
-        }
-
-        public IStreamProviderRuntime CurrentStreamProviderRuntime
-        {
-            get { return clientProviderRuntime; }
         }
 
         public IGrainReferenceRuntime GrainReferenceRuntime { get; private set; }
@@ -115,6 +105,7 @@ namespace Orleans
                 foreach (var handler in connectionLostHandlers)
                 {
                     this.ClusterConnectionLost += handler;
+
                 }
 
                 var gatewayCountChangedHandlers = this.ServiceProvider.GetServices<GatewayCountChangedHandler>();
@@ -205,8 +196,6 @@ namespace Orleans
                 retryFilter);
 
             ClientStatistics.Start(MessageCenter, clientId.GrainId);
-            
-            clientProviderRuntime.StreamingInitialize();
 
             async Task ExecuteWithRetries(Func<Task> task, Func<Exception, Task<bool>> shouldRetry)
             {
@@ -361,8 +350,7 @@ namespace Orleans
 
         private void UnregisterCallback(CorrelationId id)
         {
-            CallbackData ignore;
-            callbacks.TryRemove(id, out ignore);
+            callbacks.TryRemove(id, out _);
         }
 
         public void Reset(bool cleanup)
@@ -375,13 +363,6 @@ namespace Orleans
                 }
             }, this.logger);
 
-            Utils.SafeExecute(() =>
-            {
-                if (clientProviderRuntime != null)
-                {
-                    clientProviderRuntime.Reset(cleanup).WaitWithThrow(ResetTimeout);
-                }
-            }, logger, "Client.clientProviderRuntime.Reset");
             Utils.SafeExecute(() =>
             {
                 incomingMessagesThreadTimeTracking?.OnStopExecution();
@@ -414,15 +395,6 @@ namespace Orleans
                 }
             });
             
-            try
-            {
-                if (clientProviderRuntime != null)
-                {
-                    clientProviderRuntime.Reset().WaitWithThrow(ResetTimeout);
-                }
-            }
-            catch (Exception) { }
-
             Utils.SafeExecute(() => this.Dispose());
         }
 

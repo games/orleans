@@ -6,10 +6,10 @@ using System.Runtime.CompilerServices;
 [assembly: InternalsVisibleTo("Orleans.CodeGeneration.Build")]
 [assembly: InternalsVisibleTo("Orleans.Runtime")]
 [assembly: InternalsVisibleTo("Orleans.Runtime.Abstractions")]
+[assembly: InternalsVisibleTo("Orleans.Streaming")]
 [assembly: InternalsVisibleTo("Orleans.TelemetryConsumers.Counters")]
 [assembly: InternalsVisibleTo("Orleans.TelemetryConsumers.Linux")]
 [assembly: InternalsVisibleTo("Orleans.TestingHost")]
-[assembly: InternalsVisibleTo("Orleans.TestingHost.AppDomain")]
 
 [assembly: InternalsVisibleTo("AWSUtils.Tests")]
 [assembly: InternalsVisibleTo("DefaultCluster.Tests")]
@@ -25,8 +25,6 @@ using System.Runtime.CompilerServices;
 [assembly: InternalsVisibleTo("TestExtensions")]
 [assembly: InternalsVisibleTo("TestInternalGrains")]
 [assembly: InternalsVisibleTo("CodeGenerator.Tests")]
-
-[assembly: KnownAssembly(typeof(IGrain))]
 
 // Mocking libraries
 [assembly: InternalsVisibleTo("DynamicProxyGenAssembly2")]

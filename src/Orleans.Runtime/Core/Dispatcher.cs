@@ -82,8 +82,6 @@ namespace Orleans.Runtime
             Exception exc = null,
             bool rejectMessages = false)
         {
-            this.messagingTrace.OnDispatcherForwardingMultiple(messages.Count, oldAddress, forwardingAddress, failedOperation, exc);
-
             // IMPORTANT: do not do anything on activation context anymore, since this activation is invalid already.
             scheduler.QueueAction(
                 () =>
@@ -96,6 +94,7 @@ namespace Orleans.Runtime
                         }
                         else
                         {
+                            this.messagingTrace.OnDispatcherForwardingMultiple(messages.Count, oldAddress, forwardingAddress, failedOperation, exc);
                             TryForwardRequest(message, oldAddress, forwardingAddress, failedOperation, exc);
                         }
                     }
@@ -355,7 +354,7 @@ namespace Orleans.Runtime
 
         internal void PrepareSystemTargetMessage(Message message)
         {
-            message.Category = message.TargetGrain.Equals(Constants.MembershipOracleType) ?
+            message.Category = message.TargetGrain.Equals(Constants.MembershipServiceType) ?
                 Message.Categories.Ping : Message.Categories.System;
 
             if (message.TargetSilo == null)
@@ -380,14 +379,21 @@ namespace Orleans.Runtime
                 if (target == null)
                 {
                     MessagingStatisticsGroup.OnRejectedMessage(msg);
-                    Message response = this.messageFactory.CreateRejectionResponse(msg, Message.RejectionTypes.Unrecoverable,
-                        string.Format("SystemTarget {0} not active on this silo. Msg={1}", msg.TargetGrain, msg));
-                    this.messageCenter.SendMessage(response);
                     this.logger.LogWarning(
-                        (int)ErrorCode.MessagingMessageFromUnknownActivation,
+                        (int) ErrorCode.MessagingMessageFromUnknownActivation,
                         "Received a message {Message} for an unknown SystemTarget: {Target}",
-                        msg,
-                        msg.TargetAddress);
+                         msg, msg.TargetAddress);
+
+                    // Send a rejection only on a request
+                    if (msg.Direction == Message.Directions.Request)
+                    {
+                        var response = this.messageFactory.CreateRejectionResponse(
+                            msg,
+                            Message.RejectionTypes.Unrecoverable,
+                            $"SystemTarget {msg.TargetGrain} not active on this silo. Msg={msg}");
+
+                        this.messageCenter.SendMessage(response);
+                    }
                     return;
                 }
 
@@ -444,8 +450,7 @@ namespace Orleans.Runtime
                         msg.InterfaceType,
                         msg);
 
-                    var str = $"Error creating activation for grain {msg.TargetGrain} (interface: {msg.InterfaceType}). Message {msg}";
-                    this.RejectMessage(msg, Message.RejectionTypes.Transient, new OrleansException(str, ex));
+                    this.RejectMessage(msg, Message.RejectionTypes.Transient, ex);
                 }
             }
         }

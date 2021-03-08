@@ -7,9 +7,9 @@ using System.Threading.Tasks;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Orleans.Hosting;
+using Orleans.Internal;
 using Orleans.Runtime;
 using Orleans.Runtime.TestHooks;
-using Orleans.TestingHost.Utils;
 
 namespace Orleans.TestingHost
 {
@@ -65,7 +65,7 @@ namespace Orleans.TestingHost
         /// <summary>
         /// Delegate used to create and start an individual silo.
         /// </summary>
-        public Func<string, IList<IConfigurationSource>, Task<SiloHandle>> CreateSiloAsync { private get; set; }
+        public Func<string, IConfiguration, Task<SiloHandle>> CreateSiloAsync { private get; set; }
 
         public TestClusterBuilder ConfigureBuilder(Action configureDelegate)
         {

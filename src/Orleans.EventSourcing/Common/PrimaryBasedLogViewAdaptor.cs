@@ -1,15 +1,9 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Text;
 using System.Threading.Tasks;
-using Orleans.LogConsistency;
 using System.Diagnostics;
 using Microsoft.Extensions.Logging;
-using Orleans.Serialization;
-using Orleans.MultiCluster;
-using Orleans.Runtime;
-using Orleans.GrainDirectory;
 
 namespace Orleans.EventSourcing.Common
 {
@@ -152,8 +146,6 @@ namespace Orleans.EventSourcing.Common
         /// The runtime services required for implementing notifications between grain instances in different cluster.
         /// </summary>
         protected ILogConsistencyProtocolServices Services { get; private set; }
-
-        private const int max_notification_batch_size = 10000;
 
         /// <summary>
         /// Construct an instance, for the given parameters.

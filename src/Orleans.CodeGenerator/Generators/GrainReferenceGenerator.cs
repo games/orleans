@@ -6,7 +6,6 @@ using System.Threading.Tasks;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
-using Orleans.CodeGenerator.Compatibility;
 using Orleans.CodeGenerator.Model;
 using Orleans.CodeGenerator.Utilities;
 using static Microsoft.CodeAnalysis.CSharp.SyntaxFactory;
@@ -150,6 +149,9 @@ namespace Orleans.CodeGenerator.Generators
                         allParameters.Add(TypeOfExpression(typeParameter.ToTypeSyntax()));
                     }
 
+                    // PR: 6844 (fix generic overload selector in GenericMethodInvoker)
+                    allParameters.AddRange(parameters.Select(p => TypeOfExpression(p.Symbol.Type.ToTypeSyntax())));
+                    
                     allParameters.AddRange(parameters.Select(p => GetParameterForInvocation(p.Symbol, p.Name)));
 
                     args =
@@ -317,7 +319,12 @@ namespace Orleans.CodeGenerator.Generators
                 var enumType = wellKnownTypes.TransactionOption;
                 var txRequirement = (int)attr.ConstructorArguments.First().Value;
                 var values = enumType.GetMembers().OfType<IFieldSymbol>().ToList();
-                var mapping = values.ToDictionary(m => (int)m.ConstantValue, m => m.Name);
+                var mapping = new Dictionary<int, string>();
+                foreach (var val in values)
+                {
+                    mapping[(int)val.ConstantValue] = val.Name;
+                }
+
                 if (!mapping.TryGetValue(txRequirement, out var value))
                 {
                     throw new NotSupportedException(

@@ -7,7 +7,6 @@ using Microsoft.Extensions.Options;
 using Orleans.Concurrency;
 using Orleans.Configuration;
 using Orleans.Internal;
-using Orleans.MultiCluster;
 using Orleans.Runtime.Providers;
 using Orleans.Serialization;
 
@@ -43,8 +42,8 @@ namespace Orleans.Runtime.MembershipService
             if (isPrimarySilo)
             {
                 this.logger.Info(ErrorCode.MembershipFactory1, "Creating in-memory membership table");
-                var providerRuntime = serviceProvider.GetRequiredService<SiloProviderRuntime>();
-                providerRuntime.RegisterSystemTarget(ActivatorUtilities.CreateInstance<MembershipTableSystemTarget>(serviceProvider));
+                var catalog = serviceProvider.GetRequiredService<Catalog>();
+                catalog.RegisterSystemTarget(ActivatorUtilities.CreateInstance<MembershipTableSystemTarget>(serviceProvider));
             }
 
             var grainFactory = this.serviceProvider.GetRequiredService<IInternalGrainFactory>();

@@ -66,12 +66,6 @@ namespace Orleans.Serialization
             return new CorrelationId(@this.ReadLong());
         }
 
-        internal static GrainDirectoryEntryStatus ReadMultiClusterStatus<TReader>(this TReader @this) where TReader : IBinaryTokenStreamReader
-        {
-            byte val = @this.ReadByte();
-            return (GrainDirectoryEntryStatus)val;
-        }
-
         /// <summary> Read an <c>ActivationAddress</c> value from the stream. </summary>
         /// <returns>Data from current position in stream, converted to the appropriate output type.</returns>
         internal static ActivationAddress ReadActivationAddress<TReader>(this TReader @this) where TReader : IBinaryTokenStreamReader
@@ -609,14 +603,13 @@ namespace Orleans.Serialization
 
         private byte[] CheckLength(int n, out int offset)
         {
-            bool ignore;
             byte[] res;
-            if (TryCheckLengthFast(n, out res, out offset, out ignore))
+            if (TryCheckLengthFast(n, out res, out offset, out _))
             {
                 return res;
             }
 
-            return CheckLength(n, out offset, out ignore);
+            return CheckLength(n, out offset, out _);
         }
         
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -639,8 +632,6 @@ namespace Orleans.Serialization
 
         private byte[] CheckLength(int n, out int offset, out bool safeToUse)
         {
-            safeToUse = false;
-            offset = 0;
             if (currentOffset == currentSegmentOffsetPlusCount)
             {
                 StartNextSegment();

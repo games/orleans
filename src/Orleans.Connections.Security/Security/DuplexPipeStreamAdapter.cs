@@ -20,7 +20,7 @@ namespace Orleans.Connections.Security
         }
 
         public DuplexPipeStreamAdapter(IDuplexPipe duplexPipe, StreamPipeReaderOptions readerOptions, StreamPipeWriterOptions writerOptions, Func<Stream, TStream> createStream) :
-            base(duplexPipe.Input, duplexPipe.Output)
+            base(duplexPipe)
         {
             var stream = createStream(this);
             Stream = stream;
@@ -34,7 +34,6 @@ namespace Orleans.Connections.Security
 
         public PipeWriter Output { get; }
 
-#if NETCOREAPP
         public override async ValueTask DisposeAsync()
         {
             lock (_disposeLock)
@@ -52,11 +51,6 @@ namespace Orleans.Connections.Security
 
         protected override void Dispose(bool disposing)
         {
-            throw new NotSupportedException();
-        }
-#else
-        protected override void Dispose(bool disposing)
-        {
             lock (_disposeLock)
             {
                 if (_disposed)
@@ -72,6 +66,5 @@ namespace Orleans.Connections.Security
                 Output.Complete();
             }
         }
-#endif
     }
 }

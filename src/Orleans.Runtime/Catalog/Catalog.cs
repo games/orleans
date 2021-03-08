@@ -2,16 +2,15 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Runtime.ExceptionServices;
-using System.Runtime.Serialization;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Orleans.Configuration;
 using Orleans.GrainDirectory;
 using Orleans.Internal;
 using Orleans.Metadata;
-using Orleans.MultiCluster;
 using Orleans.Runtime.GrainDirectory;
 using Orleans.Runtime.Messaging;
 using Orleans.Runtime.Placement;
@@ -19,7 +18,6 @@ using Orleans.Runtime.Scheduler;
 using Orleans.Runtime.Versions;
 using Orleans.Runtime.Versions.Compatibility;
 using Orleans.Serialization;
-using Orleans.Streams;
 
 namespace Orleans.Runtime
 {
@@ -36,7 +34,7 @@ namespace Orleans.Runtime
         private readonly ILocalGrainDirectory directory;
         private readonly OrleansTaskScheduler scheduler;
         private readonly ActivationDirectory activations;
-        private IStreamProviderRuntime providerRuntime;
+        private readonly LRU<ActivationAddress, ExceptionDispatchInfo> failedActivations = new(1000, TimeSpan.FromSeconds(5));
         private IServiceProvider serviceProvider;
         private readonly ILogger logger;
         private int collectionNumber;
@@ -74,7 +72,6 @@ namespace Orleans.Runtime
             MessageCenter messageCenter,
             MessageFactory messageFactory,
             SerializationManager serializationManager,
-            IStreamProviderRuntime providerRuntime,
             IServiceProvider serviceProvider,
             CachedVersionSelectorManager versionSelectorManager,
             ILoggerFactory loggerFactory,
@@ -103,7 +100,6 @@ namespace Orleans.Runtime
             this.grainCreator = grainCreator;
             this.serializationManager = serializationManager;
             this.versionSelectorManager = versionSelectorManager;
-            this.providerRuntime = providerRuntime;
             this.serviceProvider = serviceProvider;
             this.collectionOptions = collectionOptions;
             this.messagingOptions = messagingOptions;
@@ -151,6 +147,7 @@ namespace Orleans.Runtime
             maxRequestProcessingTime = this.messagingOptions.CurrentValue.MaxRequestProcessingTime;
             grainDirectory.SetSiloRemovedCatalogCallback(this.OnSiloStatusChange);
             this.gcTimer = timerFactory.Create(this.activationCollector.Quantum, "Catalog.GCTimer");
+            this.RuntimeClient = serviceProvider.GetRequiredService<InsideRuntimeClient>();
         }
 
         /// <summary>
@@ -240,6 +237,8 @@ namespace Orleans.Runtime
             var watch = ValueStopwatch.StartNew();
             var number = Interlocked.Increment(ref collectionNumber);
             long memBefore = GC.GetTotalMemory(false) / (1024 * 1024);
+
+            failedActivations.RemoveExpired();
 
             if (logger.IsEnabled(LogLevel.Debug))
             {
@@ -419,6 +418,23 @@ namespace Orleans.Runtime
             return numActsBefore;
         }
 
+        public void RegisterSystemTarget(ISystemTarget target)
+        {
+            var systemTarget = target as SystemTarget;
+            if (systemTarget == null) throw new ArgumentException($"Parameter must be of type {typeof(SystemTarget)}", nameof(target));
+            systemTarget.RuntimeClient = this.RuntimeClient;
+            scheduler.RegisterWorkContext(systemTarget);
+            activations.RecordNewSystemTarget(systemTarget);
+        }
+
+        public void UnregisterSystemTarget(ISystemTarget target)
+        {
+            var systemTarget = target as SystemTarget;
+            if (systemTarget == null) throw new ArgumentException($"Parameter must be of type {typeof(SystemTarget)}", nameof(target));
+            activations.RemoveSystemTarget(systemTarget);
+            scheduler.UnregisterWorkContext(systemTarget);
+        }
+
         public int ActivationCount { get { return activations.Count; } }
 
         /// <summary>
@@ -456,7 +472,7 @@ namespace Orleans.Runtime
                     if (result.PlacedUsing is StatelessWorkerPlacement st)
                     {
                         // Check if there is already enough StatelessWorker created
-                        if (LocalLookup(address.Grain, out var local) && local.Count > st.MaxLocal)
+                        if (LocalLookup(address.Grain, out var local) && local.Count >= st.MaxLocal)
                         {
                             // Redirect directly to an already created StatelessWorker
                             // It's a bit hacky since we will return an activation with a different
@@ -488,6 +504,12 @@ namespace Orleans.Runtime
 
             if (result is null)
             {
+                if (failedActivations.TryGetValue(address, out var ex))
+                {
+                    logger.Warn(ErrorCode.Catalog_ActivationException, "Call to an activation that failed during OnActivateAsync()");
+                    ex.Throw();
+                }
+
                 // Did not find and did not start placing new
                 if (logger.IsEnabled(LogLevel.Debug))
                 {
@@ -518,7 +540,6 @@ namespace Orleans.Runtime
         {
             None,
             Register,
-            SetupState,
             InvokeActivate,
             Completed
         }
@@ -562,8 +583,6 @@ namespace Orleans.Runtime
 
                     initStage = ActivationInitializationStage.InvokeActivate;
                     await InvokeActivate(activation, requestContextData);
-
-                    this.activationCollector.ScheduleCollection(activation);
 
                     // Success!! Log the result, and start processing messages
                     initStage = ActivationInitializationStage.Completed;
@@ -649,6 +668,7 @@ namespace Orleans.Runtime
                     UnregisterMessageTarget(activation);
                     if (initStage == ActivationInitializationStage.InvokeActivate)
                     {
+                        failedActivations.Add(activation.Address, ExceptionDispatchInfo.Capture(exception));
                         activation.SetState(ActivationState.FailedToActivate);
                         logger.Warn(ErrorCode.Catalog_Failed_InvokeActivate, string.Format("Failed to InvokeActivate for {0}.", activation), exception);
                         // Reject all of the messages queued for this activation.
@@ -951,8 +971,7 @@ namespace Orleans.Runtime
                 try
                 {
                     // just check in case this activation data is already Invalid or not here at all.
-                    ActivationData ignore;
-                    if (TryGetActivationData(activation.ActivationId, out ignore) &&
+                    if (TryGetActivationData(activation.ActivationId, out _) &&
                         activation.State == ActivationState.Deactivating)
                     {
                         RequestContext.Clear(); // Clear any previous RC, so it does not leak into this call by mistake. 
@@ -964,23 +983,6 @@ namespace Orleans.Runtime
                 {
                     logger.Error(ErrorCode.Catalog_ErrorCallingDeactivate,
                         string.Format("Error calling grain's OnDeactivateAsync() method - Grain type = {1} Activation = {0}", activation, grainTypeName), exc);
-                }
-
-                if (activation.IsUsingStreams)
-                {
-                    try
-                    {
-                        await activation.DeactivateStreamResources();
-                    }
-                    catch (Exception exc)
-                    {
-                        logger.Warn(ErrorCode.Catalog_DeactivateStreamResources_Exception, String.Format("DeactivateStreamResources Grain type = {0} Activation = {1} failed.", grainTypeName, activation), exc);
-                    }
-                }
-
-                if (activation.GrainInstance is ILogConsistencyProtocolParticipant)
-                {
-                    await ((ILogConsistencyProtocolParticipant)activation.GrainInstance).DeactivateProtocolParticipant();
                 }
             }
             catch (Exception exc)

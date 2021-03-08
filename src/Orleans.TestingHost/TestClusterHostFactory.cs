@@ -8,7 +8,6 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Newtonsoft.Json;
 using Orleans.Hosting;
-using Orleans.Runtime.Providers;
 using Orleans.Runtime.TestHooks;
 using Orleans.Configuration;
 using Orleans.Messaging;
@@ -30,17 +29,10 @@ namespace Orleans.TestingHost
         /// Creates an returns a new silo.
         /// </summary>
         /// <param name="hostName">The silo name if it is not already specified in the configuration.</param>
-        /// <param name="configurationSources">The configuration.</param>
+        /// <param name="configuration">The configuration.</param>
         /// <returns>A new silo.</returns>
-        public static ISiloHost CreateSiloHost(string hostName, IEnumerable<IConfigurationSource> configurationSources)
+        public static ISiloHost CreateSiloHost(string hostName, IConfiguration configuration)
         {
-            var configBuilder = new ConfigurationBuilder();
-            foreach (var source in configurationSources)
-            {
-                configBuilder.Add(source);
-            }
-            var configuration = configBuilder.Build();
-
             string siloName = configuration[nameof(TestSiloSpecificOptions.SiloName)] ?? hostName;
 
             var hostBuilder = new HostBuilder();
@@ -58,15 +50,7 @@ namespace Orleans.TestingHost
                 .Configure<ClusterOptions>(configuration)
                 .Configure<SiloOptions>(options => options.SiloName = siloName);
 
-            hostBuilder
-                .ConfigureHostConfiguration(cb =>
-                {
-                    // TODO: Instead of passing the sources individually, just chain the pre-built configuration once we upgrade to Microsoft.Extensions.Configuration 2.1
-                    foreach (var source in configBuilder.Sources)
-                    {
-                        cb.Add(source);
-                    }
-                });
+            hostBuilder.ConfigureHostConfiguration(cb => cb.AddConfiguration(configuration));
 
             hostBuilder.Properties["Configuration"] = configuration;
             ConfigureAppServices(configuration, hostBuilder, siloBuilder, siloHostBuilder);
@@ -87,8 +71,6 @@ namespace Orleans.TestingHost
                     services.Configure<SiloMessagingOptions>(op => op.ResponseTimeout = TimeSpan.FromMilliseconds(1000000));
                 }
             });
-
-            siloBuilder.GetApplicationPartManager().ConfigureDefaults();
 
             var host = hostBuilder.Build();
             var silo = host.Services.GetRequiredService<ISiloHost>();
@@ -116,30 +98,32 @@ namespace Orleans.TestingHost
             });
 
             ConfigureAppServices(configuration, builder);
-            builder.GetApplicationPartManager().ConfigureDefaults();
             return builder.Build();
         }
 
-        public static string SerializeConfigurationSources(IList<IConfigurationSource> sources)
+        public static string SerializeConfiguration(IConfiguration configuration)
         {
             var settings = new JsonSerializerSettings
             {
                 TypeNameHandling = TypeNameHandling.Auto,
-                Formatting = Formatting.Indented,
+                Formatting = Formatting.None,
             };
 
-            return JsonConvert.SerializeObject(sources, settings);
+            KeyValuePair<string, string>[] enumerated = configuration.AsEnumerable().ToArray();
+            return JsonConvert.SerializeObject(enumerated, settings);
         }
 
-        public static IList<IConfigurationSource> DeserializeConfigurationSources(string serializedSources)
+        public static IConfiguration DeserializeConfiguration(string serializedSources)
         {
             var settings = new JsonSerializerSettings
             {
                 TypeNameHandling = TypeNameHandling.Auto,
-                Formatting = Formatting.Indented,
             };
 
-            return JsonConvert.DeserializeObject<IList<IConfigurationSource>>(serializedSources, settings);
+            var builder = new ConfigurationBuilder();
+            var enumerated = JsonConvert.DeserializeObject<KeyValuePair<string, string>[]>(serializedSources, settings);
+            builder.AddInMemoryCollection(enumerated);
+            return builder.Build();
         }
 
         private static void ConfigureListeningPorts(IConfiguration configuration, IServiceCollection services)
@@ -258,8 +242,8 @@ namespace Orleans.TestingHost
         private static void InitializeTestHooksSystemTarget(ISiloHost host)
         {
             var testHook = host.Services.GetRequiredService<TestHooksSystemTarget>();
-            var providerRuntime = host.Services.GetRequiredService<SiloProviderRuntime>();
-            providerRuntime.RegisterSystemTarget(testHook);
+            var catalog = host.Services.GetRequiredService<Catalog>();
+            catalog.RegisterSystemTarget(testHook);
         }
     }
 }

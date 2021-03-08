@@ -15,14 +15,12 @@ using Orleans.Runtime;
 using Orleans.Runtime.Messaging;
 using Orleans.Serialization;
 using Orleans.Statistics;
-using Orleans.Streams;
-using Orleans.Streams.Core;
 
 namespace Orleans
 {
     internal static class DefaultClientServices
     {
-        public static void AddDefaultServices(IClientBuilder builder, IServiceCollection services)
+        public static void AddDefaultServices(IServiceCollection services)
         {
             // Options logging
             services.TryAddSingleton(typeof(IOptionFormatter<>), typeof(DefaultOptionsFormatter<>));
@@ -35,13 +33,11 @@ namespace Orleans
             services.TryAddSingleton<IHostEnvironmentStatistics, NoOpHostEnvironmentStatistics>();
             services.TryAddSingleton<IAppEnvironmentStatistics, AppEnvironmentStatistics>();
             services.TryAddSingleton<ClientStatisticsManager>();
-            services.TryAddFromExisting<IStatisticsManager, ClientStatisticsManager>();
             services.TryAddSingleton<ApplicationRequestsStatisticsGroup>();
             services.TryAddSingleton<StageAnalysisStatisticsGroup>();
             services.TryAddSingleton<SchedulerStatisticsGroup>();
             services.TryAddSingleton<SerializationStatisticsGroup>();
             services.AddLogging();
-            services.TryAddSingleton<TypeMetadataCache>();
             services.TryAddSingleton<GrainBindingsResolver>();
             services.TryAddSingleton<OutsideRuntimeClient>();
             services.TryAddSingleton<ClientGrainContext>();
@@ -56,7 +52,6 @@ namespace Orleans
             services.TryAddSingleton<ImrRpcProvider>();
             services.TryAddSingleton<ImrGrainMethodInvokerProvider>();
             services.TryAddSingleton<GrainReferenceSerializer>();
-            services.TryAddSingleton<BinaryFormatterGrainReferenceSurrogateSelector>();
             services.TryAddSingleton<GrainReferenceKeyStringConverter>();
             services.TryAddSingleton<IGrainReferenceRuntime, GrainReferenceRuntime>();
             services.TryAddSingleton<GrainInterfaceTypeResolver>();
@@ -67,13 +62,7 @@ namespace Orleans
             services.TryAddFromExisting<IInternalGrainFactory, GrainFactory>();
             services.TryAddSingleton<ClientProviderRuntime>();
             services.TryAddSingleton<MessageFactory>();
-            services.TryAddFromExisting<IStreamProviderRuntime, ClientProviderRuntime>();
             services.TryAddFromExisting<IProviderRuntime, ClientProviderRuntime>();
-            services.TryAddSingleton<IStreamSubscriptionManagerAdmin, StreamSubscriptionManagerAdmin>();
-            services.TryAddSingleton<ImplicitStreamSubscriberTable>();
-            services.AddSingleton<IStreamNamespacePredicateProvider, DefaultStreamNamespacePredicateProvider>();
-            services.AddSingleton<IStreamNamespacePredicateProvider, ConstructorStreamNamespacePredicateProvider>();
-            services.AddSingletonKeyedService<string, IStreamIdMapper, DefaultStreamIdMapper>(DefaultStreamIdMapper.Name);
             services.TryAddSingleton<IInternalClusterClient, ClusterClient>();
             services.TryAddFromExisting<IClusterClient, IInternalClusterClient>();
 
@@ -82,16 +71,16 @@ namespace Orleans
                 sp.GetRequiredService<IOptions<ClientMessagingOptions>>().Value.LargeMessageWarningThreshold));
             services.TryAddSingleton<ITypeResolver, CachedTypeResolver>();
             services.TryAddSingleton<IFieldUtils, FieldUtils>();
-            services.AddSingleton<BinaryFormatterSerializer>();
-            services.AddSingleton<BinaryFormatterISerializableSerializer>();
-            services.AddFromExisting<IKeyedSerializer, BinaryFormatterISerializableSerializer>();
-#pragma warning disable CS0618 // Type or member is obsolete
+
+            // Register the ISerializable serializer first, so that it takes precedence
+            services.AddSingleton<DotNetSerializableSerializer>();
+            services.AddFromExisting<IKeyedSerializer, DotNetSerializableSerializer>();
+
             services.TryAddSingleton<ILBasedSerializer>();
             services.AddFromExisting<IKeyedSerializer, ILBasedSerializer>();
-#pragma warning restore CS0618 // Type or member is obsolete
 
             // Application parts
-            var parts = builder.GetApplicationPartManager();
+            var parts = services.GetApplicationPartManager();
             services.TryAddSingleton<IApplicationPartManager>(parts);
             parts.AddApplicationPart(new AssemblyPart(typeof(RuntimeVersion).Assembly) { IsFrameworkAssembly = true });
             parts.AddFeatureProvider(new BuiltInTypesSerializationFeaturePopulator());
@@ -148,6 +137,11 @@ namespace Orleans
             services.AddSingleton<IGrainInterfacePropertiesProvider, TypeNameGrainPropertiesProvider>();
             services.AddSingleton<IGrainPropertiesProvider, TypeNameGrainPropertiesProvider>();
             services.AddSingleton<IGrainPropertiesProvider, ImplementedInterfaceProvider>();
+            // Logging helpers
+            services.AddSingleton<ClientLoggingHelper>();
+            services.AddFromExisting<ILifecycleParticipant<IClusterClientLifecycle>, ClientLoggingHelper>();
+            services.AddFromExisting<IGrainIdLoggingHelper, ClientLoggingHelper>();
+            services.AddFromExisting<IInvokeMethodRequestLoggingHelper, ClientLoggingHelper>();
         }
     }
 }
